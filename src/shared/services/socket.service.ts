@@ -1,5 +1,6 @@
 import { Server as SocketServer } from "socket.io";
 import http from "http";
+import { corsOrigin } from "../config/cors";
 
 export class SocketService {
   private static instance: SocketService;
@@ -15,9 +16,12 @@ export class SocketService {
   }
 
   public init(server: http.Server): SocketServer {
+    // Shares the HTTP allowlist. Previously origin: "*", which let any site
+    // open a socket and subscribe to ticket rooms regardless of ALLOWED_ORIGINS.
     this.io = new SocketServer(server, {
       cors: {
-        origin: "*",
+        origin: corsOrigin,
+        credentials: true,
         methods: ["GET", "POST"]
       }
     });

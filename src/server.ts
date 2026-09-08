@@ -4,6 +4,7 @@ import helmet from "helmet";
 import pinoHttp from "pino-http";
 import path from "path";
 import { logger } from "./shared/utils/logger";
+import { corsOrigin } from "./shared/config/cors";
 import { globalRateLimiter, webhookRateLimiter, authRateLimiter } from "./shared/middlewares/rateLimiter";
 import { errorHandler } from "./shared/middlewares/errorHandler";
 
@@ -36,24 +37,10 @@ import { opsAuditLogsRoutes } from "./modules/ops/routes/auditLogs.routes";
 import { webhookRoutes } from "./modules/webhooks/routes/webhook.routes";
 
 // ─── CORS configuration ───────────────────────────────────────────────────────
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
-  .split(",")
-  .map((o) => o.trim())
-  .filter(Boolean);
-
+// Origin policy lives in shared/config/cors so the Socket.io server enforces
+// the same allowlist.
 const corsOptions: cors.CorsOptions = {
-  origin: (origin, callback) => {
-    // Allow requests with no origin (server-to-server, curl, Postman in dev)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.length === 0) {
-      // No allowlist configured — only permit in non-production
-      if (process.env.NODE_ENV !== "production") return callback(null, true);
-      return callback(new Error("CORS: no allowed origins configured"));
-    }
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    logger.warn({ origin }, "[CORS] Rejected request from unlisted origin");
-    return callback(new Error(`CORS: origin ${origin} not allowed`));
-  },
+  origin: corsOrigin,
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
@@ -79,7 +66,10 @@ app.use(
 
 // CORS
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // Handle pre-flight requests
+// Pre-flight. Express 5 routes through path-to-regexp v8, where a bare "*" is
+// a parse error — the catch-all is spelled "/{*splat}" (zero or more segments,
+// so it covers "/" too).
+app.options("/{*splat}", cors(corsOptions));
 
 // Global rate limit — applied to every request before routing
 app.use(globalRateLimiter);
