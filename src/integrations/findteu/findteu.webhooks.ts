@@ -1,19 +1,21 @@
 import crypto from 'crypto';
 import { AppError } from '../../shared/utils/AppError';
+import { requireEnv } from '../../shared/utils/env';
 
 export class FindTEUWebhooks {
-  private webhookSecret: string;
-
-  constructor() {
-    this.webhookSecret = process.env.FINDTEU_WEBHOOK_SECRET || '';
+  /**
+   * FINDTEU_WEBHOOK_SECRET is required. Verification fails closed: an unset
+   * secret used to skip signature checking altogether, which accepted forged
+   * shipment events from anyone who knew the endpoint.
+   *
+   * Read lazily so a missing secret fails the individual request as a
+   * misconfiguration, instead of crashing the process at import time.
+   */
+  private get webhookSecret(): string {
+    return requireEnv('FINDTEU_WEBHOOK_SECRET');
   }
 
   public verifySignature(rawBody: any, signature: string): void {
-    if (!this.webhookSecret) {
-      console.warn('[FindTEUWebhooks] No webhook secret configured. Bypassing signature verification.');
-      return;
-    }
-
     if (!signature) {
       throw new AppError('Missing FindTEU webhook signature', 401);
     }

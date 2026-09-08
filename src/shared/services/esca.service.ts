@@ -1,10 +1,16 @@
 import axios from 'axios';
 import { AppError } from '../utils/AppError';
+import { requireEnv } from '../utils/env';
 
 export class EscaService {
     private isSandbox = process.env.USE_SANDBOX === 'true';
     private baseUrl = process.env.ESCA_API_URL || 'https://api.escafinance.com/v1';
-    private apiKey = process.env.ESCA_API_KEY || 'test_key';
+
+    // Getter, not a field: only required once a live (non-sandbox) call is
+    // actually about to be made.
+    private get apiKey(): string {
+        return requireEnv('ESCA_API_KEY');
+    }
 
     /**
      * Gets the current conversion rate.

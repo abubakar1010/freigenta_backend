@@ -1,10 +1,17 @@
 import axios from 'axios';
 import { AppError } from '../utils/AppError';
+import { requireEnv } from '../utils/env';
 
 export class BridgeService {
     private isSandbox = process.env.USE_SANDBOX === 'true';
     private baseUrl = process.env.BRIDGE_API_URL || 'https://api.bridge.xyz/v1';
-    private apiKey = process.env.BRIDGE_API_KEY || 'test_bridge_key';
+
+    // Getters, not fields: every live call sits behind an isSandbox
+    // short-circuit, so the credential is only required when a real request is
+    // about to be made. Sandbox runs with no Bridge configuration at all.
+    private get apiKey(): string {
+        return requireEnv('BRIDGE_API_KEY');
+    }
 
     /**
      * Creates or validates a carrier beneficiary for payout settlement.
@@ -38,7 +45,7 @@ export class BridgeService {
         }
 
         try {
-            const bridgeWalletId = process.env.BRIDGE_TREASURY_WALLET_ID || 'wallet_dev';
+            const bridgeWalletId = requireEnv('BRIDGE_TREASURY_WALLET_ID');
             
             // Bridge Transfer V0 API payload
             const response = await axios.post(`${this.baseUrl.replace('/v1', '/v0')}/transfers`, {

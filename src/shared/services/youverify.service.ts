@@ -1,6 +1,7 @@
 import axios from "axios";
 import { AppError } from "../utils/AppError";
 import { decrypt } from "../utils/crypto";
+import { requireEnv } from "../utils/env";
 
 export type YouVerifyStatus =
   | "VERIFIED"
@@ -13,7 +14,12 @@ export class YouVerifyService {
   private isSandbox = process.env.USE_SANDBOX === "true";
   private baseUrl =
     process.env.YOUVERIFY_API_URL || "https://api.youverify.co/v2";
-  private apiKey = process.env.YOUVERIFY_API_KEY || "test_yv_key";
+
+  // Getter, not a field: verifyIdentity short-circuits to mocks in sandbox, so
+  // the key is only required when a real YouVerify call is about to be made.
+  private get apiKey(): string {
+    return requireEnv("YOUVERIFY_API_KEY");
+  }
 
   async verifyIdentity(
     type: "BVN" | "NIN",
@@ -74,8 +80,15 @@ export class YouVerifyService {
     }
   }
 
+  /**
+   * Verifies an inbound YouVerify webhook.
+   *
+   * YOUVERIFY_WEBHOOK_SECRET is required and has no fallback. These webhooks
+   * drive KYC outcomes, so a guessable or absent secret would let anyone mark
+   * an account as verified.
+   */
   public verifySignature(rawBody: any, signature: string): void {
-    const webhookSecret = process.env.YOUVERIFY_WEBHOOK_SECRET || this.apiKey;
+    const webhookSecret = requireEnv("YOUVERIFY_WEBHOOK_SECRET");
     if (!signature) {
       throw new AppError('Missing YouVerify webhook signature', 401);
     }
