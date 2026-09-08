@@ -1,0 +1,14 @@
+node_modules
+package-lock.json
+/src/generated/prisma
+uploads/
+dist/
+*.log
+.DS_Store
+
+# Secrets — never commit. Only .env.example is tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key

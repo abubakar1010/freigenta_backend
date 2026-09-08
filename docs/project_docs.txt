@@ -1,0 +1,187 @@
+Enterprise Backend Architecture Documentation
+System: adesolacicero (Freigenta Platform) Date: July 2026 Scope: Initial deep audit and feature discovery covering Customer, Ops, and the future Admin roles.
+
+PHASE 1: COMPLETE PROJECT AUDIT
+System Overview
+The current system is a Next.js (App Router) based frontend that serves as a robust B2B logistics/fintech platform. It handles global shipments, invoices, payment processing, KYC (Know Your Customer) compliance, and internal operations.
+
+Folder Architecture & Layout Hierarchy
+app/: Next.js App Router for defining public pages, authentication flows, and role-based dashboard layouts (customer/, ops/).
+features/: Domain-Driven Design (DDD) container. Contains business logic segmented by domain (e.g., features/user/customer/components, features/public).
+components/: Shared and layout-specific components (e.g., customer_dashboard, ops_dashboard).
+Routing & Data Flow
+The application relies heavily on layout nesting. Each role (/customer, /ops) has its own layout.tsx providing a unified Sidebar and Topbar Navigation.
+State Management: Primarily relies on React local state (useState) within isolated feature components. No global Redux store is currently implemented for business data, relying instead on prop drilling or layout-level state for UI elements (like sidebar toggles).
+PHASE 2: FEATURE DISCOVERY
+1. Payment & Invoice Management
+Workflow: Customers upload invoices; the system processes these into payments; Ops reviews and settles them.
+Hidden Features:
+Destination steppers showing payment status.
+Multi-tab payment details (Overview, Timeline, Documents, Settlement, Activity, Internal Notes).
+Search, filtering, and pagination on payment list views.
+2. Action Required / Compliance (KYC)
+Workflow: Customers are alerted to pending issues (e.g., missing documents, KYC failures). They use a master-detail drawer to upload missing files.
+Hidden Features: Integrated file dropzone, live validation, and status badges.
+3. Customer Support & Ticketing
+Workflow: Customers can view tickets and reply to "In Progress" tickets.
+Hidden Features: Accordion-style UI for viewing chat history. Dynamic state-based colors for ticket statuses.
+4. Operations & Settlement (Ops Role)
+Workflow: Ops personnel review uploaded invoices, audit KYC documents, manage global settlements, and view system-wide reports.
+Modules discovered: kyc-reviews, settlements, audit-logs.
+PHASE 3: USER ROLE ANALYSIS & RBAC MATRIX
+The system operates on three primary roles. The matrix defines the access level (C = Create, R = Read, U = Update, D = Delete, A = Approve/Reject).
+
+1. Customer
+The end-user entity representing a business or individual utilizing the platform for logistics and payments.
+
+Payments/Invoices: C, R
+Company Profile & Documents: C, R, U
+Support Tickets: C, R, U (Reply)
+Reports: R (Export)
+Internal Notes (on Payments): R, U (Team visibility only)
+2. Ops (Operations)
+Internal staff responsible for day-to-day platform operations, transaction monitoring, and compliance.
+
+Payments/Invoices: R, U
+Settlements: C, R, U, A
+KYC Reviews: R, U, A
+Audit Logs: R
+Customer Profiles: R
+Reports: R (Export)
+3. Admin (Future Implementation)
+System administrators overseeing the entire platform, roles, and configuration.
+
+All Ops Capabilities: C, R, U, D, A
+User Management (Ops & Customers): C, R, U, D
+Role & Permission Management: C, R, U, D
+System Settings (Feature flags, configs): C, R, U
+Global Audit Logs: R (Undeletable)
+Master Content & Data Management: C, R, U, D
+PHASE 4: DATABASE DESIGN (PostgreSQL)
+1. users Table
+Stores authentication and profile metadata for all roles.
+
+id (UUID, PK)
+email (VARCHAR, Unique, Not Null)
+password_hash (VARCHAR, Not Null)
+role (ENUM: 'CUSTOMER', 'OPS', 'ADMIN')
+status (ENUM: 'ACTIVE', 'SUSPENDED', 'PENDING_KYC')
+created_at (TIMESTAMP)
+updated_at (TIMESTAMP)
+deleted_at (TIMESTAMP, Nullable for Soft Delete) Indexes: (email)
+2. companies Table (Customers only)
+id (UUID, PK)
+user_id (UUID, FK -> users.id)
+name (VARCHAR, Not Null)
+registration_number (VARCHAR)
+kyc_status (ENUM: 'APPROVED', 'REJECTED', 'PENDING', 'ACTION_REQUIRED') Relationships: 1-to-1 with users.
+3. invoices Table
+id (UUID, PK)
+company_id (UUID, FK -> companies.id)
+amount (DECIMAL(10,2), Not Null)
+currency (VARCHAR(3), Default: 'USD')
+status (ENUM: 'DRAFT', 'SUBMITTED', 'VERIFIED', 'REJECTED')
+file_url (VARCHAR, Not Null)
+4. payments Table
+Represents the actual transaction following an invoice.
+
+id (UUID, PK)
+invoice_id (UUID, FK -> invoices.id)
+status (ENUM: 'PROCESSING', 'SETTLED', 'FAILED')
+destination_account (VARCHAR)
+internal_notes (TEXT, Nullable - Only visible to Ops and Admin)
+5. support_tickets Table
+id (UUID, PK)
+creator_id (UUID, FK -> users.id)
+subject (VARCHAR)
+status (ENUM: 'OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED')
+6. support_messages Table
+id (UUID, PK)
+ticket_id (UUID, FK -> support_tickets.id)
+sender_id (UUID, FK -> users.id)
+message (TEXT)
+created_at (TIMESTAMP) Indexes: (ticket_id, created_at)
+PHASE 5: API DESIGN (RESTful)
+Authentication
+POST /api/v1/auth/login (Body: email, password -> Returns JWT Access + Refresh)
+POST /api/v1/auth/refresh
+POST /api/v1/auth/logout
+Customer Endpoints
+GET /api/v1/customer/invoices (List invoices, with pagination & filters)
+POST /api/v1/customer/invoices/upload (Multipart/form-data for PDF)
+GET /api/v1/customer/payments/{id} (Deep fetch including timeline & settlement data)
+GET /api/v1/customer/action-required (Returns list of pending KYC or invoice issues)
+POST /api/v1/customer/support (Create a new ticket)
+POST /api/v1/customer/support/{ticket_id}/reply
+Ops Endpoints
+GET /api/v1/ops/invoices/pending
+PATCH /api/v1/ops/invoices/{id}/status (Approve/Reject)
+GET /api/v1/ops/settlements
+POST /api/v1/ops/payments/{id}/internal-note (Add a note to a payment)
+GET /api/v1/ops/audit-logs (Requires Ops Role)
+PHASE 8: BUSINESS LOGIC & RULES
+1. Invoice Validation & State Transition
+Customers can only upload PDFs or Images under 10MB.
+An invoice starts as SUBMITTED.
+Ops must transition it to VERIFIED before a payment record is generated.
+If rejected, a record must be created in action-required to notify the customer.
+2. Support Ticket Lifecycle
+Customers can only reply to a ticket if it is OPEN or IN_PROGRESS.
+If a ticket is RESOLVED, the customer UI hides the reply input (as seen in SupportCompo.tsx).
+3. Payment Timelines
+The DestinationStepper in the UI requires 5 distinct states from the backend. The backend must emit status updates (e.g., Initiated, Cleared, In Transit, Settled) with accurate timestamps to populate the Timeline tab.
+PHASE 6: AUTHENTICATION & SECURITY
+JWT Strategy
+Access Tokens: Short-lived (15 minutes). Sent via Authorization: Bearer <token> header. Contains { userId, role }.
+Refresh Tokens: Long-lived (7 days). Stored in HTTP-Only, Secure cookies (Set-Cookie: refreshToken=...; HttpOnly; Secure; SameSite=Strict).
+Token Rotation: Every time a refresh token is used to generate a new access token, a new refresh token is issued and the old one is invalidated (prevents replay attacks).
+Security Headers & Measures
+Rate Limiting: 100 requests per 15 minutes per IP on generic endpoints; 5 requests per 15 minutes on /auth/login.
+CSRF: Mitigated by utilizing SameSite=Strict cookies for refresh tokens and headers for access tokens.
+XSS: Frontend uses React which auto-escapes, but backend must enforce strict input validation using a library like Zod or Joi.
+SQL Injection: Prevented via ORM (Prisma or TypeORM) parameterized queries.
+PHASE 7: ADMIN PANEL (Future Design)
+Given the Ops and Customer capabilities, the Admin panel (/admin) must have overarching control:
+
+Dashboard: High-level system health, global volume metrics, error rates.
+User & Role Management: Ability to create Ops users, suspend Customer accounts, and impersonate users for debugging.
+Feature Flags: Toggle beta features (e.g., new payment methods) per company.
+Global Audit Logs: Immutable log view (who did what, when) spanning both Ops actions and API calls.
+System Settings: Webhook configurations, third-party API keys (e.g., Stripe, Plaid).
+PHASE 9: MISSING FEATURES & TECHNICAL DEBT
+1. Frontend Tech Debt Identified
+Hardcoded Mock Data: The current UI (e.g., SupportCompo, ActionRequiredCompo) relies entirely on hardcoded MOCK_TICKETS and MOCK_ACTIONS. This needs to be stripped out and replaced with React Query or SWR hooks fetching from the new API.
+Component Bloat: PaymentDetailsCompo.tsx is >700 lines. The tabs should be extracted into separate files.
+Prop Drilling vs Context: Global state (like the current user's profile) should be moved to a React Context or a lightweight store like Zustand rather than passing it down via props.
+2. Missing Backend Logic Needed
+File Storage System: The backend needs an integration (e.g., AWS S3) for secure document uploads (Invoices, KYC docs), utilizing signed URLs rather than public links.
+Webhooks Listener: A robust service to listen to payment gateway updates and sync the invoices and payments tables asynchronously.
+PHASE 10: BACKEND IMPLEMENTATION PLAN
+Priority 1: Foundation (Weeks 1-2)
+Setup Monorepo / Backend Repository (Node.js/Express or NestJS).
+Setup PostgreSQL Database & ORM (Prisma).
+Implement Authentication (JWT, Refresh Cookies, Login/Register).
+Priority 2: Core Domain (Weeks 3-4)
+Implement Customer & Company Profile APIs.
+Implement S3 Bucket Integration for Secure Document Uploads.
+Implement Invoice & Payment APIs (CRUD + Status transitions).
+Priority 3: Ops & Support (Weeks 5-6)
+Implement Ops Review workflows (approving invoices, settling payments).
+Implement Support Ticketing System APIs.
+Implement Audit Log middleware.
+Priority 4: Admin & Polish (Week 7)
+Build out the Admin endpoints (User Management, Feature Flags).
+Performance testing, caching (Redis for repeated queries).
+PHASE 11: FINAL ARCHITECTURE SUMMARY
+This architecture relies on a clean separation of concerns.
+
+The Next.js frontend is strictly a view layer powered by role-specific dashboards.
+The backend will be a stateless RESTful JSON API.
+Security is prioritized via HTTP-Only cookies, JWT rotation, and strict Role-Based Access Control (RBAC).
+The database schema is fully normalized, avoiding duplication between Customer metadata and Ops actions.
+Testing Strategy for Backend Implementation:
+
+Unit Tests: Jest for business logic (e.g., ensuring a payment cannot transition from DRAFT directly to SETTLED).
+Integration Tests: Supertest for API endpoints (mocking the DB).
+E2E Tests: Playwright covering the full flow from uploading an invoice on the frontend to Ops approving it on the backend.
+Project Architecture and Code Review
