@@ -1,0 +1,100 @@
+# Production stack for a single VPS. nginx runs on the host and terminates TLS.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Secrets come from ./.env, which is gitignored and must exist on the server.
+# Compose also reads that file for ${...} interpolation below.
+
+services:
+  app:
+    # Two supported flows:
+    #   on-server build : docker compose -f docker-compose.prod.yml up -d --build
+    #   CI-built image  : APP_IMAGE=ghcr.io/owner/repo:sha  docker compose ... pull app
+    image: ${APP_IMAGE:-freigenta-backend:latest}
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    init: true
+
+    # Exactly one instance. The rate limiter uses an in-process memory store,
+    # Socket.io has no Redis adapter, and BullMQ workers are registered inside
+    # this process — a second replica breaks all three. See the runbook before
+    # scaling out.
+    deploy:
+      replicas: 1
+
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+
+    # Bound to loopback: only the host's nginx can reach it, never the public
+    # internet directly.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    volumes:
+      # Local-disk fallback for uploads when S3 is unavailable. Without this
+      # the files are lost on every redeploy.
+      - uploads_data:/app/uploads
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    # gracefulShutdown in app.ts force-exits at 30s. Docker's 10s default would
+    # SIGKILL mid-drain and lose in-flight settlement jobs.
+    stop_grace_period: 40s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+    # No published ports — reachable only on the compose network. It holds
+    # idempotency keys and queued payment job payloads.
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+      # AOF so queued jobs survive a restart.
+      - --appendonly
+      - "yes"
+
+    volumes:
+      - redis_data:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "$REDIS_PASSWORD", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  uploads_data:
+  redis_data:

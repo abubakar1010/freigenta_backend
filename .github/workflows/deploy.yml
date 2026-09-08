@@ -1,0 +1,138 @@
+# Build the API image, publish it to GHCR, then roll it out on the VPS.
+#
+# Required repository secrets (the deploy job is skipped until they exist):
+#   VPS_HOST     — server hostname or IP
+#   VPS_USER     — SSH user with docker permissions
+#   VPS_SSH_KEY  — private key for that user
+#   VPS_APP_DIR  — checkout dir on the server, e.g. /srv/freigenta
+#
+# The deploy job targets the `production` GitHub Environment. Add a required
+# reviewer there if you want a human to approve each rollout.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Never let two rollouts touch the server at once.
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: Typecheck and publish image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Fails the run before anything is published or deployed.
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+
+      - id: meta
+        run: echo "image=${IMAGE,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Roll out to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        env:
+          IMAGE_REF: ${{ needs.build.outputs.image }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${VPS_HOST:-}" ]; then
+            echo "VPS secrets not configured — skipping rollout."
+            exit 0
+          fi
+
+          # Plain ssh rather than a marketplace action: one less third-party
+          # dependency with access to production credentials.
+          mkdir -p ~/.ssh
+          echo "$VPS_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes \
+            "$VPS_USER@$VPS_HOST" \
+            APP_IMAGE="$IMAGE_REF" \
+            GHCR_TOKEN="$GHCR_TOKEN" \
+            GHCR_USER="${{ github.actor }}" \
+            APP_DIR="$VPS_APP_DIR" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd "$APP_DIR"
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+          export APP_IMAGE
+          docker compose -f docker-compose.prod.yml pull app
+          docker compose -f docker-compose.prod.yml up -d --no-build app
+
+          # Wait for the container healthcheck (GET /health) to go green.
+          for i in $(seq 1 30); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' \
+              "$(docker compose -f docker-compose.prod.yml ps -q app)" 2>/dev/null || echo starting)
+            [ "$state" = "healthy" ] && echo "Healthy after ${i}0s" && exit 0
+            [ "$state" = "unhealthy" ] && break
+            sleep 10
+          done
+
+          echo "Rollout did not become healthy — recent logs:" >&2
+          docker compose -f docker-compose.prod.yml logs --tail=50 app >&2
+          exit 1
+          REMOTE
+
+      - name: Prune old images
+        if: success()
+        continue-on-error: true
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          if [ -n "${VPS_HOST:-}" ]; then
+            ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes \
+              "$VPS_USER@$VPS_HOST" 'docker image prune -af --filter "until=168h"'
+          fi

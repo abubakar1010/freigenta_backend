@@ -1,0 +1,28 @@
+# Secrets must never enter the build context — a COPY would bake them into an
+# image layer, where they survive even if a later layer deletes the file.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Rebuilt inside the image; copying host artefacts risks a platform mismatch
+# (bcrypt and msgpackr ship native bindings).
+node_modules
+dist
+
+# Runtime state, not source
+uploads/
+*.log
+
+# Not needed at runtime
+.git
+.github
+.gitignore
+docs/
+test-crypto.ts
+docker-compose*.yml
+Dockerfile
+.dockerignore
+deploy/
+README.md
