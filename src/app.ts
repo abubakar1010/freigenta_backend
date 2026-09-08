@@ -9,6 +9,7 @@ import { connectDB } from "./shared/database/mongo";
 import { SocketService } from "./shared/services/socket.service";
 import { registerAllWorkers } from "./workers";
 import { queueService } from "./shared/services/queue.service";
+import { assertStorageReady } from "./shared/services/storage.service";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const server = http.createServer(app);
@@ -57,6 +58,8 @@ process.on("uncaughtException", (err) => {
 });
 
 const start = async (): Promise<void> => {
+  // Fail here rather than on a customer's first upload.
+  assertStorageReady();
   await connectDB();
   registerAllWorkers();
   server.listen(PORT, () => {
@@ -64,4 +67,12 @@ const start = async (): Promise<void> => {
   });
 };
 
-start();
+// Without this, a failure inside start() — a missing DATABASE_URL, an
+// unreachable Mongo, an incomplete storage config — becomes an unhandled
+// rejection that the handler above merely logs. The process would stay alive
+// having never called listen(): failing health checks forever, and never
+// restarted, because Docker only restarts a container that has exited.
+start().catch((err) => {
+  logger.fatal({ err }, "Startup failed — exiting");
+  process.exit(1);
+});

@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import pinoHttp from "pino-http";
-import path from "path";
 import { logger } from "./shared/utils/logger";
 import { corsOrigin } from "./shared/config/cors";
 import { globalRateLimiter, webhookRateLimiter, authRateLimiter } from "./shared/middlewares/rateLimiter";
@@ -35,6 +34,7 @@ import { opsKycRoutes } from "./modules/ops/routes/kyc.routes";
 import { opsReportsRoutes } from "./modules/ops/routes/reports.routes";
 import { opsAuditLogsRoutes } from "./modules/ops/routes/auditLogs.routes";
 import { webhookRoutes } from "./modules/webhooks/routes/webhook.routes";
+import { fileRoutes } from "./modules/files/routes/files.routes";
 
 // ─── CORS configuration ───────────────────────────────────────────────────────
 // Origin policy lives in shared/config/cors so the Socket.io server enforces
@@ -85,8 +85,10 @@ app.use(
   })
 );
 
-// Static file serving for local uploads fallback
-app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+// NOTE: /uploads static serving was removed deliberately. It exposed the local
+// storage directory — which holds KYC and customs documents when the fallback
+// fires — over an unauthenticated path, bypassing every access check. All
+// reads now go through /api/files, which authorises per object.
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
@@ -97,6 +99,10 @@ app.use("/api/auth", authRateLimiter, authRoutes);
 
 // Webhook routes get their own limiter (higher volume, time-sensitive)
 app.use("/api/webhooks", webhookRateLimiter, webhookRoutes);
+
+// Uploaded objects. Authorisation is per file and lives in the route itself,
+// because public marketing images must stay readable without a token.
+app.use("/api/files", fileRoutes);
 
 // Admin portals
 app.use("/api/admin/settings", settingsRoutes);

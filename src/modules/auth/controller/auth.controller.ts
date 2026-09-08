@@ -3,38 +3,77 @@ import { ZodError } from "zod";
 import { AuthService } from "../service/auth.service";
 import { step1Schema, step2Schema, step3Schema, forgotPasswordSchema, resetPasswordSchema, updateProfileSchema, updatePasswordSchema } from "../auth.validation";
 import { AppError } from "../../../shared/utils/AppError";
-import { S3Service } from "../../../shared/services/s3.service";
+import { storeUpload } from "../../../shared/services/file.service";
+import { FilePurpose, PUBLIC_PURPOSES } from "../../../shared/models/storedFile.model";
+import { UploadRequest, issueUploadTicket } from "../../../shared/middlewares/uploadAuth.middleware";
 import fileUpload from "express-fileupload";
 import { AuthenticatedRequest } from "../../../shared/middlewares/auth.middleware";
 import { User } from "../../../shared/models/user.model";
 
 const authService = new AuthService();
-const s3Service = new S3Service();
 
 export class AuthController {
   // File Upload Controller
-  uploadFile = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  uploadFile = async (req: UploadRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.files || !req.files.file) {
         throw new AppError("No file uploaded", 400);
       }
 
       const file = req.files.file as fileUpload.UploadedFile;
-      const fileUrl = await s3Service.uploadFile(
-        file.name,
-        file.data,
-        file.mimetype
-      );
+      const purpose = this.resolvePurpose(req);
+
+      const result = await storeUpload({
+        buffer: file.data,
+        originalName: file.name,
+        purpose,
+        ownerId: req.user?.userId ?? null,
+        ownerPhone: req.uploadTicket?.phone ?? null,
+        ip: req.ip,
+      });
 
       res.status(200).json({
         success: true,
         message: "File uploaded successfully.",
-        url: fileUrl,
+        url: result.url,
       });
     } catch (error) {
     next(error);
   }
   };
+
+  /**
+   * Decides what a file is for, server-side.
+   *
+   * Visibility is derived from purpose, so letting a client name its own
+   * purpose would let it mark an identity document PUBLIC. Ticket holders are
+   * mid-registration and can only produce onboarding documents; the publicly
+   * readable purposes are restricted to ADMIN.
+   */
+  private resolvePurpose(req: UploadRequest): FilePurpose {
+    if (req.uploadTicket) return "onboarding";
+
+    const requested = String(req.body?.purpose || "profile") as FilePurpose;
+    const allowed: FilePurpose[] = ["kyc", "profile", "news", "settings"];
+    if (!allowed.includes(requested)) {
+      throw new AppError(
+        `Unsupported upload purpose. Expected one of: ${allowed.join(", ")}.`,
+        400
+      );
+    }
+
+    if (PUBLIC_PURPOSES.includes(requested)) {
+      const role = (req.user?.role || "").toUpperCase();
+      if (role !== "ADMIN") {
+        throw new AppError(
+          "Only an administrator may upload publicly readable files.",
+          403
+        );
+      }
+    }
+
+    return requested;
+  }
 
   //  SIGN IN
   signIn = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -110,9 +149,14 @@ export class AuthController {
         return;
       }
       await authService.verifyPhoneOtp(phone, code);
+
+      // Registration requires uploading identity documents before the account
+      // exists, so there is no session to authenticate those uploads with.
+      // This ticket stands in, and is only obtainable by passing the OTP.
       res.status(200).json({
         success: true,
         message: "Phone number verified successfully.",
+        uploadTicket: issueUploadTicket(phone),
       });
     } catch (error) {
     next(error);

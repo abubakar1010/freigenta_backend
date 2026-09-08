@@ -39,6 +39,22 @@ export const authRateLimiter = rateLimit({
 });
 
 /**
+ * Uploads get their own budget. They sit under /api/auth, so without this a
+ * customer submitting five onboarding documents would burn half of the
+ * authRateLimiter allowance for their IP — and an office NAT shares that IP
+ * across everyone in the building.
+ * 30 uploads per 15 minutes per IP.
+ */
+export const uploadRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1_000,
+  max: 30,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  handler: rateLimitHandler,
+  keyGenerator,
+});
+
+/**
  * Global API limiter — applied to all routes by default.
  * 300 requests per minute per IP.
  */

@@ -1,12 +1,10 @@
 import { Request, Response, NextFunction } from "express";
 import { Invoice } from "../../../shared/models/invoice.model";
 import { User } from "../../../shared/models/user.model";
-import { S3Service } from "../../../shared/services/s3.service";
+import { storeUpload } from "../../../shared/services/file.service";
 import { logAudit } from "../../../shared/utils/audit";
 import { AppError } from "../../../shared/utils/AppError";
 import fileUpload from "express-fileupload";
-
-const s3Service = new S3Service();
 
 export const uploadInvoice = async (
   req: Request,
@@ -69,12 +67,21 @@ export const uploadInvoice = async (
 
     const file = req.files.file as fileUpload.UploadedFile;
 
-    // Save document file securely via MinioService
-    const fileUrl = await s3Service.uploadFile(file.name, file.data, file.mimetype);
+    // storeUpload sniffs the real content type and rejects anything that is not
+    // a genuine JPEG, PNG or PDF, so the supporting documents below are covered
+    // too — they never passed through validateUpload, which only inspects
+    // req.files.file.
+    const primary = await storeUpload({
+      buffer: file.data,
+      originalName: file.name,
+      purpose: "invoice",
+      ownerId: userId,
+      ip: req.ip,
+    });
 
     // Save metadata of optional files if present
     const documentsList: any[] = [
-      { type: "Commercial Invoice", name: file.name, url: fileUrl, size: file.size }
+      { type: "Commercial Invoice", name: file.name, url: primary.url, size: file.size }
     ];
 
     // Optional supporting documents
@@ -82,11 +89,17 @@ export const uploadInvoice = async (
     for (const key of docKeys) {
       if (req.files[key]) {
         const docFile = req.files[key] as fileUpload.UploadedFile;
-        const url = await s3Service.uploadFile(docFile.name, docFile.data, docFile.mimetype);
+        const stored = await storeUpload({
+          buffer: docFile.data,
+          originalName: docFile.name,
+          purpose: "invoice",
+          ownerId: userId,
+          ip: req.ip,
+        });
         documentsList.push({
           type: key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase()),
           name: docFile.name,
-          url,
+          url: stored.url,
           size: docFile.size
         });
       }
@@ -104,7 +117,7 @@ export const uploadInvoice = async (
       invoiceDueDate: isNaN(dueDateParsed.getTime()) ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : dueDateParsed,
       currency: currency || "USD",
       amount,
-      fileUrl,
+      fileUrl: primary.url,
       status: "UPLOADED",
       ocrConfidence: 100,
       extractedData: {

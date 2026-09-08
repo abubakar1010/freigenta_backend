@@ -38,6 +38,16 @@ export const generateToken = (payload: object): string => {
   return jwt.sign(payload, getSecret(), options);
 };
 
+/**
+ * Signs a short-lived, single-purpose token (e.g. the onboarding upload
+ * ticket). Separate from generateToken so its lifetime is explicit rather than
+ * inheriting JWT_EXPIRES_IN, which is tuned for sessions.
+ */
+export const generateScopedToken = (
+  payload: object,
+  expiresIn: SignOptions["expiresIn"]
+): string => jwt.sign(payload, getSecret(), { expiresIn });
+
 export const verifyToken = (token: string): any => {
   try {
     return jwt.verify(token, getSecret());

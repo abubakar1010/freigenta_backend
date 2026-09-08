@@ -3,6 +3,8 @@ import { OtpService } from "../../../shared/services/otp.service";
 import { AppError } from "../../../shared/utils/AppError";
 import { generateToken } from "../../../shared/utils/jwt.util";
 import { MailService } from "../../../shared/services/mail.service";
+import { claimFilesForPhone } from "../../../shared/services/file.service";
+import { logger } from "../../../shared/utils/logger";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 
@@ -85,6 +87,19 @@ export class AuthService {
       isPhoneVerified: true,
       onboardingStep: "COMPANY_INFO",
     });
+
+    // Documents were uploaded before this account existed, against a ticket
+    // bound to the verified phone. Attach them now.
+    const claimed = await claimFilesForPhone(
+      data.phoneNumber,
+      newUser._id.toString(),
+    );
+    if (claimed > 0) {
+      logger.info(
+        { userId: newUser._id.toString(), claimed },
+        "[Auth] Claimed onboarding uploads for new account",
+      );
+    }
 
     const accessToken = generateToken({
       userId: newUser._id.toString(),
