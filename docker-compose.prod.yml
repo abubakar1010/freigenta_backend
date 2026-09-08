@@ -24,7 +24,22 @@ services:
     deploy:
       replicas: 1
 
-    env_file: .env
+    # .env is mounted, not passed via env_file, on purpose. Compose's env_file
+    # parser keeps surrounding quotes and leaves backslash-n escapes literal,
+    # while the app's own dotenv.config() strips quotes and expands them. That
+    # difference silently corrupts BRIDGE_WEBHOOK_PUBLIC_KEY_PEM into an
+    # unparseable key, so every Bridge payout webhook fails signature checks.
+    # Mounting the file means one parser (dotenv) handles it in dev and prod.
+    #
+    # The file must be readable by uid 1000 (the `node` user) on the host.
+    volumes:
+      - ./.env:/app/.env:ro
+      # Local-disk fallback for uploads when S3 is unavailable. Without this
+      # the files are lost on every redeploy.
+      - uploads_data:/app/uploads
+
+    # dotenv does not overwrite variables that are already set, so these win
+    # over anything in .env.
     environment:
       NODE_ENV: production
       PORT: "8080"
@@ -36,10 +51,6 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
-    volumes:
-      # Local-disk fallback for uploads when S3 is unavailable. Without this
-      # the files are lost on every redeploy.
-      - uploads_data:/app/uploads
 
     depends_on:
       redis:
