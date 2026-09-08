@@ -34,8 +34,10 @@ services:
     # The file must be readable by uid 1000 (the `node` user) on the host.
     volumes:
       - ./.env:/app/.env:ro
-      # Local-disk fallback for uploads when S3 is unavailable. Without this
-      # the files are lost on every redeploy.
+      # Holds objects written by the R2 fallback when Cloudflare is briefly
+      # unreachable. Those rows are marked storage:"local" in StoredFile and
+      # should be re-uploaded once R2 is healthy; the volume only stops them
+      # disappearing before that happens.
       - uploads_data:/app/uploads
 
     # dotenv does not overwrite variables that are already set, so these win
